@@ -246,7 +246,7 @@ table.proj tr:hover td { background: rgba(201,150,42,0.08); }
       <button class="tab-btn" data-tab="outputs" onclick="switchTab('outputs')">Outputs</button>
       <button class="tab-btn" data-tab="edit" onclick="switchTab('edit')">Edit</button>
       <div style="flex:1"></div>
-      <button class="tab-btn" onclick="openScoring()" title="Scoring settings" style="font-size:0.5rem;">⚙ Scoring</button>
+      <button id="scoring-btn" class="tab-btn" onclick="openScoring()" title="Scoring settings" style="font-size:0.5rem;">⚙ Scoring</button>
     </div>
 
     <div id="tab-rankings"></div>
@@ -261,12 +261,21 @@ table.proj tr:hover td { background: rgba(201,150,42,0.08); }
 
 <!-- Scoring modal -->
 <div id="scoring-modal" class="modal-overlay">
-  <div class="modal-card">
+  <div class="modal-card" style="max-width:500px;">
     <button class="modal-close" onclick="closeModal('scoring-modal')">&#x2715;</button>
     <h3>Scoring Settings</h3>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px;">
+      <label style="margin:0;white-space:nowrap;">Load preset</label>
+      <select id="sc-preset-select" onchange="loadScoringPreset(this.value)" style="flex:1;background:rgba(255,255,255,0.06);border:1px solid var(--brown-mid);color:var(--cream);padding:6px 8px;border-radius:2px;font-family:'Crimson Text',serif;font-size:0.95rem;"></select>
+      <button class="btn btn-sm btn-ghost" onclick="deleteScoringPreset()" title="Delete selected preset" style="flex-shrink:0;">Delete</button>
+    </div>
     <div class="scoring-grid" id="scoring-fields"></div>
-    <div class="modal-actions">
-      <button class="btn" onclick="saveScoring()">Save &amp; Recompute</button>
+    <div style="display:flex;gap:8px;align-items:center;margin-top:12px;">
+      <input id="sc-preset-name" placeholder="Name this preset…" style="flex:1;" />
+      <button class="btn btn-sm" onclick="saveScoringPreset()">Save Preset</button>
+    </div>
+    <div class="modal-actions" style="margin-top:10px;">
+      <button class="btn" onclick="saveScoring()">Apply &amp; Recompute</button>
       <button class="btn btn-ghost" onclick="closeModal('scoring-modal')">Cancel</button>
     </div>
   </div>
@@ -274,18 +283,20 @@ table.proj tr:hover td { background: rgba(201,150,42,0.08); }
 
 <!-- Sheets sync modal -->
 <div id="sync-modal" class="modal-overlay">
-  <div class="modal-card">
+  <div class="modal-card" style="max-width:560px;">
     <button class="modal-close" onclick="closeModal('sync-modal')">&#x2715;</button>
     <h3>Sync from Google Sheets</h3>
     <label>Spreadsheet ID</label>
-    <input id="sync-sheet-id" placeholder="1cPDwEQJr2..." />
-    <label>Tab GID (number)</label>
-    <input id="sync-gid" placeholder="0" />
-    <div class="modal-actions">
-      <button class="btn" onclick="runSheetSync()">Fetch &amp; Preview</button>
+    <input id="sync-sheet-id" placeholder="1cPDwEQJr2Ko6fI5D5sBzF4WODjrgIiOxyq2QVFs0elE" />
+    <label>Tab Name <span style="color:var(--brown-light);font-size:0.8rem;">(must match the sheet tab exactly)</span></label>
+    <input id="sync-tab-name" placeholder="Arizona Cardinals" />
+    <div style="margin:10px 0 4px;font-size:0.8rem;color:var(--brown-light);">— or —</div>
+    <div class="modal-actions" style="margin-bottom:0;">
+      <button class="btn" onclick="runSheetSync('single')">Fetch This Team</button>
+      <button class="btn btn-ghost" onclick="runSheetSync('all')">Sync All 32 Teams</button>
       <button class="btn btn-ghost" onclick="closeModal('sync-modal')">Cancel</button>
     </div>
-    <div id="sync-preview" style="margin-top:14px;color:var(--parchment);font-size:0.85rem;max-height:200px;overflow:auto;"></div>
+    <div id="sync-preview" style="margin-top:14px;color:var(--parchment);font-size:0.85rem;max-height:320px;overflow:auto;"></div>
   </div>
 </div>
 
@@ -306,6 +317,16 @@ const NFL_TEAMS = [
   ['SEA','Seahawks'],['TB','Buccaneers'],['TEN','Titans'],['WAS','Commanders'],
 ];
 const TEAM_NAME = Object.fromEntries(NFL_TEAMS);
+const TEAM_FULL_NAME = {
+  ARI:'Arizona Cardinals', ATL:'Atlanta Falcons', BAL:'Baltimore Ravens', BUF:'Buffalo Bills',
+  CAR:'Carolina Panthers', CHI:'Chicago Bears', CIN:'Cincinnati Bengals', CLE:'Cleveland Browns',
+  DAL:'Dallas Cowboys', DEN:'Denver Broncos', DET:'Detroit Lions', GB:'Green Bay Packers',
+  HOU:'Houston Texans', IND:'Indianapolis Colts', JAX:'Jacksonville Jaguars', KC:'Kansas City Chiefs',
+  LV:'Las Vegas Raiders', LAC:'Los Angeles Chargers', LAR:'Los Angeles Rams', MIA:'Miami Dolphins',
+  MIN:'Minnesota Vikings', NE:'New England Patriots', NO:'New Orleans Saints', NYG:'New York Giants',
+  NYJ:'New York Jets', PHI:'Philadelphia Eagles', PIT:'Pittsburgh Steelers', SF:'San Francisco 49ers',
+  SEA:'Seattle Seahawks', TB:'Tampa Bay Buccaneers', TEN:'Tennessee Titans', WAS:'Washington Commanders',
+};
 
 // ── Scoring config ──────────────────────────────────────────────────────────
 const SCORING_DEFAULTS = {
@@ -445,6 +466,7 @@ async function boot(){
   });
   if (SharedAuth.getUser()) { showApp(); loadAll(); }
   else document.getElementById('auth-gate').classList.remove('hidden');
+  updateScoringBtn();
 }
 function showApp(){
   document.getElementById('auth-gate').classList.add('hidden');
@@ -767,33 +789,305 @@ async function saveTeam(){
 }
 
 // ── Sheets sync ─────────────────────────────────────────────────────────────
-let _syncCsv = null;
-function openSync(){ document.getElementById('sync-preview').innerHTML=''; openModal('sync-modal'); }
-async function runSheetSync(){
+let _syncParsed = null;
+
+function openSync() {
+  _syncParsed = null;
+  document.getElementById('sync-preview').innerHTML = '';
+  const saved = localStorage.getItem('proj_sheet_id') || '';
+  document.getElementById('sync-sheet-id').value = saved;
+  const tabName = editTeam ? (TEAM_FULL_NAME[editTeam] || editTeam) : '';
+  document.getElementById('sync-tab-name').value = tabName;
+  openModal('sync-modal');
+}
+
+async function runSheetSync(mode) {
   const sheetId = document.getElementById('sync-sheet-id').value.trim();
-  const gid = document.getElementById('sync-gid').value.trim() || '0';
-  if (!sheetId){ notif('Enter a spreadsheet ID', true); return; }
+  if (!sheetId) { notif('Enter a spreadsheet ID', true); return; }
+  localStorage.setItem('proj_sheet_id', sheetId);
+
+  const preview = document.getElementById('sync-preview');
+  preview.innerHTML = '<div style="color:var(--gold-light);">Fetching…</div>';
+
+  if (mode === 'all') {
+    preview.innerHTML = '<div style="color:var(--gold-light);">Fetching all 32 team tabs…</div>';
+    try {
+      const res = await apiPost('/projections/sync-sheets', { sheetId, action: 'fetch-all' });
+      const allParsed = {};
+      let found = 0, missing = [];
+      for (const [abbr, csv] of Object.entries(res.teams || {})) {
+        if (!csv) { missing.push(abbr); continue; }
+        allParsed[abbr] = parseTeamCSV(csv, abbr);
+        found++;
+      }
+      _syncParsed = { mode: 'all', data: allParsed };
+      const missingHtml = missing.length
+        ? `<div style="margin-top:6px;color:var(--red);">Not found (${missing.length}): ${missing.join(', ')}</div>`
+        : '';
+      const confirmBtn = found > 0
+        ? `<button class="btn" style="margin-top:12px;" onclick="confirmSyncImport()">Import ${found} Teams</button>` : '';
+      preview.innerHTML = `<div style="color:var(--green-light);font-weight:600;">Found ${found}/32 team tabs.</div>${missingHtml}${confirmBtn}`;
+    } catch(e) { preview.innerHTML = `<div style="color:var(--red);">Error: ${esc(e.message)}</div>`; }
+    return;
+  }
+
+  // Single team mode
+  const tabName = document.getElementById('sync-tab-name').value.trim();
+  if (!tabName) { notif('Enter the tab name', true); return; }
   try {
-    const res = await apiPost('/projections/sync-sheets', { sheetId, gid });
-    _syncCsv = res.csv || '';
-    const rows = _syncCsv.split('\n').slice(0,12).map(r=>esc(r)).join('<br>');
-    document.getElementById('sync-preview').innerHTML =
-      `<div style="color:var(--gold-light);margin-bottom:6px;">Fetched ${_syncCsv.split('\n').length} rows. Preview:</div><div style="font-family:monospace;font-size:0.72rem;">${rows}</div>
-       <div style="margin-top:8px;color:var(--brown-light);">Parsing into form fields can be mapped once you confirm the layout. Raw CSV is available for review.</div>`;
-  } catch(e){ notif('Sync failed: '+e.message, true); }
+    const res = await apiPost('/projections/sync-sheets', { sheetId, sheetName: tabName });
+    const parsed = parseTeamCSV(res.csv || '', editTeam);
+    _syncParsed = { mode: 'single', data: parsed };
+    const qbs = parsed.players.filter(p=>p.position==='QB').length;
+    const rbs = parsed.players.filter(p=>p.position==='RB').length;
+    const wrs = parsed.players.filter(p=>p.position==='WR').length;
+    const tes = parsed.players.filter(p=>p.position==='TE').length;
+    const teamLine = parsed.team.total_plays
+      ? `<div style="margin-top:6px;color:var(--parchment);">Team: ${parsed.team.total_plays} plays, ${parsed.team.pass_pct}% pass, ${parsed.team.rush_pct}% rush, ${parsed.team.target_pct}% target</div>`
+      : '<div style="margin-top:6px;color:var(--brown-light);">Team-level inputs not detected (check tab structure)</div>';
+    preview.innerHTML = `
+      <div style="color:var(--green-light);font-weight:600;">${parsed.players.length} players found: ${qbs} QB, ${rbs} RB, ${wrs} WR, ${tes} TE</div>
+      ${teamLine}
+      <ul style="margin:8px 0 0;padding-left:18px;color:var(--parchment);font-size:0.82rem;">
+        ${parsed.players.map(p=>`<li>${esc(p.player_name)} (${p.position}) — GP: ${p.inputs.games_played}</li>`).join('')}
+      </ul>
+      <button class="btn" style="margin-top:12px;" onclick="confirmSyncImport()">Confirm &amp; Import into Form</button>`;
+  } catch(e) { preview.innerHTML = `<div style="color:var(--red);">Error: ${esc(e.message)}</div>`; }
+}
+
+async function confirmSyncImport() {
+  if (!_syncParsed) return;
+  if (_syncParsed.mode === 'all') {
+    // Save all teams to DB
+    let saved = 0;
+    for (const [abbr, parsed] of Object.entries(_syncParsed.data)) {
+      try {
+        const players = parsed.players.map(p => {
+          const o = calcPlayer(p, teamTotals(parsed.team));
+          return { ...p, calc_ppg: o.ppg, calc_pts: o.pts };
+        });
+        const teamPayload = { ...parsed.team };
+        await Promise.all([
+          apiPost(`/projections/players?season=${SEASON}`, { players, replaceTeam: abbr }),
+          apiPost(`/projections/teams?season=${SEASON}`, { teams: [{ nfl_team: abbr, inputs: teamPayload }] }),
+        ]);
+        // Update local state
+        state.teams[abbr] = { ...parsed.team };
+        state.players = state.players.filter(p=>p.nfl_team!==abbr).concat(players);
+        saved++;
+      } catch(e) { console.warn('Failed to save', abbr, e); }
+    }
+    closeModal('sync-modal');
+    notif(`Imported ${saved} teams from Google Sheets`);
+    renderActive();
+  } else {
+    // Single team: populate editDraft
+    const { data } = _syncParsed;
+    editDraft.team = { ...editDraft.team, ...data.team };
+    editDraft.players = data.players.map(p => ({ ...p }));
+    closeModal('sync-modal');
+    renderEdit();
+    notif(`Imported ${data.players.length} players for ${editTeam}`);
+  }
+}
+
+// ── CSV parsing ──────────────────────────────────────────────────────────────
+function parseCSVRows(text) {
+  const rows = [];
+  let row = [], cur = '', quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"') { if (text[i+1] === '"') { cur += '"'; i++; } else quoted = false; }
+      else cur += c;
+    } else if (c === '"') { quoted = true; }
+    else if (c === ',') { row.push(cur); cur = ''; }
+    else if (c === '\n') { row.push(cur); cur = ''; rows.push(row); row = []; }
+    else if (c !== '\r') { cur += c; }
+  }
+  if (cur || row.length) { row.push(cur); rows.push(row); }
+  return rows;
+}
+
+function csvPct(s) {
+  if (s == null || s === '') return '';
+  const str = String(s).trim().replace(/,/g, '');
+  if (str.endsWith('%')) { const v = parseFloat(str); return isFinite(v) ? v : ''; }
+  const v = parseFloat(str);
+  if (!isFinite(v)) return '';
+  return (v > 0 && v <= 1) ? +(v * 100).toFixed(4) : v;
+}
+
+function csvNum(s) {
+  if (s == null || s === '') return '';
+  const v = parseFloat(String(s).trim().replace(/[,$%]/g, ''));
+  return isFinite(v) ? v : '';
+}
+
+function parseTeamCSV(csvText, abbr) {
+  const rows = parseCSVRows(csvText);
+  const result = { team: { total_plays: '', pass_pct: '', rush_pct: '', target_pct: 95 }, players: [] };
+  let currentPos = null;
+
+  for (const cells of rows) {
+    const c1 = (cells[1] || '').trim();
+    const c1lo = c1.toLowerCase();
+    const c1up = c1.toUpperCase();
+
+    // Team-level inputs
+    if (c1lo.includes('total plays') || c1lo === 'plays') { result.team.total_plays = csvNum(cells[2]); continue; }
+    if (c1lo.match(/^pass\s*%?$/)) { result.team.pass_pct = csvPct(cells[2]); continue; }
+    if (c1lo.match(/^rush\s*%?$/)) { result.team.rush_pct = csvPct(cells[2]); continue; }
+    if (c1lo.includes('allocated target') || c1lo.includes('target %')) { result.team.target_pct = csvPct(cells[2]); continue; }
+
+    // Position section header row (col B = QB/RB/WR/TE, col C has "game")
+    if (['QB','RB','WR','TE'].includes(c1up) && (cells[2] || '').toLowerCase().includes('game')) {
+      currentPos = c1up; continue;
+    }
+
+    if (!currentPos || !c1 || ['QB','RB','WR','TE'].includes(c1up)) continue;
+    if (c1lo.includes('total') || c1lo.includes('remaining') || c1lo.includes('check') ||
+        c1lo.includes('inputs') || c1lo.includes('outputs') || c1lo.includes('fantasy')) continue;
+
+    const gp = csvNum(cells[2]);
+    if (gp === '' || gp < 1 || gp > 18) continue;
+
+    const player = { player_name: c1, position: currentPos, nfl_team: abbr || '', inputs: {} };
+    if (currentPos === 'QB') {
+      // C=GP, D=dropbacks(skip), E=comp%, F=Y/A, G=TD%, H=INT%, I=rush_mkt%, J=Y/carry, K=rush_td%, L=fum%
+      player.inputs = {
+        games_played: gp,
+        completion_pct: csvPct(cells[4]),
+        yards_per_attempt: csvNum(cells[5]),
+        td_pct: csvPct(cells[6]),
+        int_pct: csvPct(cells[7]),
+        rush_market_share: csvPct(cells[8]),
+        yards_per_carry: csvNum(cells[9]),
+        rush_td_rate: csvPct(cells[10]),
+        fumble_rate: csvPct(cells[11]),
+      };
+    } else {
+      // C=GP, D=rush_mkt%, E=Y/carry, F=rush_td%, G=target%, H=catch%, I=Y/rec, J=rec_td%, K=routes/G, L=fum% (RB only)
+      player.inputs = {
+        games_played: gp,
+        rush_market_share: csvPct(cells[3]),
+        yards_per_carry: csvNum(cells[4]),
+        rush_td_rate: csvPct(cells[5]),
+        target_share: csvPct(cells[6]),
+        catch_rate: csvPct(cells[7]),
+        yards_per_reception: csvNum(cells[8]),
+        receiving_td_rate: csvPct(cells[9]),
+        routes_per_game: csvNum(cells[10]),
+      };
+      if (currentPos === 'RB') player.inputs.fumble_rate = csvPct(cells[11]);
+    }
+    result.players.push(player);
+  }
+  return result;
+}
+
+// ── Scoring presets ─────────────────────────────────────────────────────────
+function loadScoringPresets() {
+  try { return JSON.parse(localStorage.getItem('proj_scoring_presets') || '[]'); } catch { return []; }
+}
+function saveScoringPresetsToStorage(presets) {
+  localStorage.setItem('proj_scoring_presets', JSON.stringify(presets));
+}
+function getScoringActiveKey() {
+  return localStorage.getItem('proj_scoring_active') || '__default__';
+}
+function setScoringActiveKey(key) {
+  localStorage.setItem('proj_scoring_active', key);
+}
+function renderScoringFields(scoring) {
+  document.getElementById('scoring-fields').innerHTML = Object.keys(SCORING_LABELS).map(k =>
+    `<div class="inp-field" style="width:auto;"><label>${SCORING_LABELS[k]}</label>
+     <input id="sc-${k}" type="number" step="0.01" value="${scoring[k] ?? ''}" style="width:100%;"></div>`
+  ).join('');
+}
+function refreshPresetDropdown(activeKey) {
+  const presets = loadScoringPresets();
+  const sel = document.getElementById('sc-preset-select');
+  sel.innerHTML =
+    `<option value="__default__">Default (PPR)</option>` +
+    presets.map((p, i) => `<option value="${i}">${esc(p.name)}</option>`).join('') +
+    `<option value="__custom__">— Custom —</option>`;
+  sel.value = activeKey !== undefined ? activeKey : getScoringActiveKey();
+}
+function updateScoringBtn() {
+  const key = getScoringActiveKey();
+  let label = 'PPR';
+  if (key !== '__default__' && key !== '__custom__') {
+    const presets = loadScoringPresets();
+    label = presets[parseInt(key)]?.name || 'Custom';
+  } else if (key === '__custom__') {
+    label = 'Custom';
+  }
+  const btn = document.getElementById('scoring-btn');
+  if (btn) btn.textContent = `⚙ ${label}`;
 }
 
 // ── Scoring modal ───────────────────────────────────────────────────────────
-function openScoring(){
-  document.getElementById('scoring-fields').innerHTML = Object.keys(SCORING_LABELS).map(k=>
-    `<div class="inp-field" style="width:auto;"><label>${SCORING_LABELS[k]}</label>
-     <input id="sc-${k}" type="number" step="0.01" value="${SCORING[k]}" style="width:100%;"></div>`).join('');
+function openScoring() {
+  refreshPresetDropdown();
+  renderScoringFields(SCORING);
+  const key = getScoringActiveKey();
+  const nameInput = document.getElementById('sc-preset-name');
+  if (key !== '__default__' && key !== '__custom__') {
+    nameInput.value = loadScoringPresets()[parseInt(key)]?.name || '';
+  } else {
+    nameInput.value = '';
+  }
   openModal('scoring-modal');
 }
-function saveScoring(){
-  Object.keys(SCORING_LABELS).forEach(k=>{ SCORING[k] = n(document.getElementById('sc-'+k).value); });
+function loadScoringPreset(val) {
+  let scoring;
+  if (val === '__default__') {
+    scoring = { ...SCORING_DEFAULTS };
+    document.getElementById('sc-preset-name').value = '';
+  } else if (val === '__custom__') {
+    return;
+  } else {
+    const preset = loadScoringPresets()[parseInt(val)];
+    if (!preset) return;
+    scoring = { ...SCORING_DEFAULTS, ...preset.scoring };
+    document.getElementById('sc-preset-name').value = preset.name;
+  }
+  renderScoringFields(scoring);
+}
+function saveScoringPreset() {
+  const name = document.getElementById('sc-preset-name').value.trim();
+  if (!name) { notif('Enter a name for this preset', true); return; }
+  const scoring = {};
+  Object.keys(SCORING_LABELS).forEach(k => { scoring[k] = n(document.getElementById('sc-'+k).value); });
+  const presets = loadScoringPresets();
+  const existing = presets.findIndex(p => p.name === name);
+  if (existing >= 0) { presets[existing].scoring = scoring; }
+  else { presets.push({ name, scoring }); }
+  saveScoringPresetsToStorage(presets);
+  const idx = existing >= 0 ? existing : presets.length - 1;
+  refreshPresetDropdown(String(idx));
+  notif(`Preset "${name}" saved`);
+}
+function deleteScoringPreset() {
+  const val = document.getElementById('sc-preset-select').value;
+  if (val === '__default__' || val === '__custom__') { notif('Cannot delete built-in presets', true); return; }
+  const presets = loadScoringPresets();
+  const name = presets[parseInt(val)]?.name;
+  presets.splice(parseInt(val), 1);
+  saveScoringPresetsToStorage(presets);
+  if (getScoringActiveKey() === val) setScoringActiveKey('__default__');
+  refreshPresetDropdown('__default__');
+  renderScoringFields(SCORING_DEFAULTS);
+  document.getElementById('sc-preset-name').value = '';
+  notif(`Preset "${name}" deleted`);
+}
+function saveScoring() {
+  Object.keys(SCORING_LABELS).forEach(k => { SCORING[k] = n(document.getElementById('sc-'+k).value); });
   localStorage.setItem('proj_scoring', JSON.stringify(SCORING));
+  setScoringActiveKey(document.getElementById('sc-preset-select').value);
   closeModal('scoring-modal');
+  updateScoringBtn();
   notif('Scoring updated');
   renderActive();
   if (editDraft) recalcEdit();
