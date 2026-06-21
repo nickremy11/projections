@@ -959,16 +959,14 @@ function parseTeamCSV(csvText, abbr) {
       if (clo.includes('allocated target') || clo.includes('target %')) { result.team.target_pct = csvPct(val); break; }
     }
 
-    // Detect position section header: any cell is QB/RB/WR/TE AND "games" appears anywhere in the row
-    const hasGames = cells.some(c => (c || '').toLowerCase().includes('games'));
-    if (hasGames) {
-      const pi = cells.findIndex((c, i) => i < 8 && ['QB','RB','WR','TE'].includes((c || '').trim().toUpperCase()));
-      if (pi >= 0) {
-        currentPos = cells[pi].trim().toUpperCase();
-        nameCol = pi;
-        posRowsLeft = FIXED_COUNTS[currentPos];
-        continue; // skip the header row itself
-      }
+    // Detect position section header: cells[1] is exactly QB/RB/WR/TE and cells[2] is empty
+    // (player rows always have a GP number in cells[2]; header rows don't)
+    const c1exact = (cells[1] || '').trim().toUpperCase();
+    if (['QB','RB','WR','TE'].includes(c1exact) && csvNum(cells[2]) === '') {
+      currentPos = c1exact;
+      nameCol = 1;
+      posRowsLeft = FIXED_COUNTS[currentPos];
+      continue; // skip header row
     }
 
     if (!currentPos || posRowsLeft <= 0 || nameCol < 0) continue;
