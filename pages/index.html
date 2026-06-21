@@ -429,11 +429,13 @@ async function apiPost(path, body){ const r = await fetch(API+path, { method:'PO
 
 function teamTotals(t){
   const totalPlays  = n(t.total_plays);
-  const rushSeason  = totalPlays * n(t.rush_pct)/100;
-  const passSeason  = totalPlays * n(t.pass_pct)/100;
+  const passPct     = n(t.pass_pct);
+  const passSeason  = totalPlays * passPct/100;
+  const rushSeason  = totalPlays * (1 - passPct/100);  // always 100 - pass%
   const tgtPct      = t.target_pct == null || t.target_pct === '' ? 95 : n(t.target_pct);
   const targetSeason = passSeason * tgtPct/100;
-  const dropbacksPG = n(t.dropbacks_per_game);  // used for route% → YPRR/TPRR
+  // dropbacks/game = (total_plays/17) × pass% × dropbacks% (dropbacks can exceed 100% of pass plays)
+  const dropbacksPG = (totalPlays/17) * passPct/100 * n(t.dropbacks_pct)/100;
   return { totalPlays, rushSeason, passSeason, targetSeason, dropbacksPG };
 }
 
@@ -756,7 +758,7 @@ function openTeam(ab){
   if (editDrafts[ab]) {
     editDraft = editDrafts[ab];
   } else {
-    const t = state.teams[ab] || { total_plays:'', pass_pct:'', rush_pct:'', target_pct:95, dropbacks_per_game:'' };
+    const t = state.teams[ab] || { total_plays:'', dropbacks_pct:'', pass_pct:'', target_pct:95 };
     const players = state.players.filter(p=>p.nfl_team===ab).map(p=>({ player_name:p.player_name, position:p.position, inputs:{...(p.inputs||{})} }));
     editDraft = { team:{...t}, players };
     editDrafts[ab] = editDraft;
@@ -775,7 +777,7 @@ POS_FIELDS.TE = POS_FIELDS.WR;
 function renderEditTeam(){
   const c = document.getElementById('tab-edit');
   const t = editDraft.team;
-  const teamInputs = [['total_plays','Total Plays'],['dropbacks_per_game','Dropbacks/G'],['pass_pct','Pass %'],['rush_pct','Rush %'],['target_pct','Alloc Tgt %']]
+  const teamInputs = [['total_plays','Total Plays'],['dropbacks_pct','Dropbacks%'],['pass_pct','Pass %'],['target_pct','Alloc Tgt %']]
     .map(([k,l])=>`<div class="inp-field"><label>${l}</label><input type="number" step="0.1" value="${t[k]??''}" oninput="editDraft.team.${k}=this.value;recalcEdit()"></div>`).join('');
 
   const sections = ['QB','RB','WR','TE'].map(pos=>{
@@ -986,7 +988,7 @@ async function runSheetSync(mode) {
     const wrs = parsed.players.filter(p=>p.position==='WR').length;
     const tes = parsed.players.filter(p=>p.position==='TE').length;
     const teamLine = parsed.team.total_plays
-      ? `<div style="margin-top:6px;color:var(--parchment);">Team: ${parsed.team.total_plays} plays, ${parsed.team.pass_pct}% pass, ${parsed.team.rush_pct}% rush, ${parsed.team.target_pct}% target</div>`
+      ? `<div style="margin-top:6px;color:var(--parchment);">Team: ${parsed.team.total_plays} plays, ${parsed.team.pass_pct}% pass, ${parsed.team.dropbacks_pct}% dropbacks, ${parsed.team.target_pct}% target</div>`
       : '<div style="margin-top:6px;color:var(--brown-light);">Team-level inputs not detected (check tab structure)</div>';
 
     // When 0 players found, show a debug dump so we can see the raw CSV structure
@@ -1014,28 +1016,19 @@ async function runSheetSync(mode) {
 async function confirmSyncImport() {
   if (!_syncParsed) return;
   if (_syncParsed.mode === 'all') {
-    // Save all teams to DB
-    let saved = 0;
+    // Populate editDrafts for all imported teams — user clicks Save All to persist
+    let count = 0;
     for (const [abbr, parsed] of Object.entries(_syncParsed.data)) {
-      try {
-        const players = parsed.players.map(p => {
-          const o = calcPlayer(p, teamTotals(parsed.team));
-          return { ...p, calc_ppg: o.ppg, calc_pts: o.pts };
-        });
-        const teamPayload = { ...parsed.team };
-        await Promise.all([
-          apiPost(`/projections/players?season=${SEASON}`, { players, replaceTeam: abbr }),
-          apiPost(`/projections/teams?season=${SEASON}`, { teams: [{ nfl_team: abbr, inputs: teamPayload }] }),
-        ]);
-        // Update local state
-        state.teams[abbr] = { ...parsed.team };
-        state.players = state.players.filter(p=>p.nfl_team!==abbr).concat(players);
-        saved++;
-      } catch(e) { console.warn('Failed to save', abbr, e); }
+      editDrafts[abbr] = {
+        team: { ...(state.teams[abbr] || { target_pct: 95 }), ...parsed.team },
+        players: parsed.players.map(p => ({ ...p })),
+      };
+      count++;
     }
     closeModal('sync-modal');
-    notif(`Imported ${saved} teams from Google Sheets`);
-    renderActive();
+    editTeam = null; editDraft = null;
+    renderEdit();
+    notif(`${count} teams ready — click Save All to persist`);
   } else {
     // Single team: populate editDraft
     const { data } = _syncParsed;
@@ -1099,6 +1092,7 @@ function parseTeamCSV(csvText, abbr) {
       if (clo.match(/^pass\s*%?$/)) { result.team.pass_pct = csvPct(val); break; }
       if (clo.match(/^rush\s*%?$/)) { result.team.rush_pct = csvPct(val); break; }
       if (clo.includes('allocated target') || clo.includes('target %')) { result.team.target_pct = csvPct(val); break; }
+      if (clo.includes('dropback')) { result.team.dropbacks_pct = csvPct(val); break; }
     }
 
     // Detect position section header: cells[1] is exactly QB/RB/WR/TE and cells[2] is empty
@@ -1154,7 +1148,7 @@ function parseTeamCSV(csvText, abbr) {
         catch_rate: csvPct(cells[nc + 6]),
         yards_per_reception: csvNum(cells[nc + 7]),
         receiving_td_rate: csvPct(cells[nc + 8]),
-        routes_per_game: csvNum(cells[nc + 9]),
+        route_pct: csvNum(cells[nc + 9]),
       };
       if (currentPos === 'RB') player.inputs.fumble_rate = csvPct(cells[nc + 10]);
     }
