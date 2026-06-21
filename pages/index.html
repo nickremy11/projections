@@ -927,59 +927,82 @@ function csvNum(s) {
 function parseTeamCSV(csvText, abbr) {
   const rows = parseCSVRows(csvText);
   const result = { team: { total_plays: '', pass_pct: '', rush_pct: '', target_pct: 95 }, players: [] };
+
+  // Fixed player-row counts per position
+  const FIXED_COUNTS = { QB: 2, RB: 3, WR: 5, TE: 3 };
   let currentPos = null;
+  let nameCol = -1;   // dynamically detected column index for player name / position label
+  let posRowsLeft = 0;
 
   for (const cells of rows) {
-    const c1 = (cells[1] || '').trim();
-    const c1lo = c1.toLowerCase();
-    const c1up = c1.toUpperCase();
-
-    // Team-level inputs
-    if (c1lo.includes('total plays') || c1lo === 'plays') { result.team.total_plays = csvNum(cells[2]); continue; }
-    if (c1lo.match(/^pass\s*%?$/)) { result.team.pass_pct = csvPct(cells[2]); continue; }
-    if (c1lo.match(/^rush\s*%?$/)) { result.team.rush_pct = csvPct(cells[2]); continue; }
-    if (c1lo.includes('allocated target') || c1lo.includes('target %')) { result.team.target_pct = csvPct(cells[2]); continue; }
-
-    // Position section header row (col B = QB/RB/WR/TE, col C has "game")
-    if (['QB','RB','WR','TE'].includes(c1up) && (cells[2] || '').toLowerCase().includes('game')) {
-      currentPos = c1up; continue;
+    // Scan first 8 columns for team-level keywords; value is always in the next cell
+    for (let ci = 0; ci < Math.min(cells.length - 1, 8); ci++) {
+      const clo = (cells[ci] || '').trim().toLowerCase();
+      const val = cells[ci + 1];
+      if (clo.includes('total plays')) { result.team.total_plays = csvNum(val); break; }
+      if (clo.match(/^pass\s*%?$/)) { result.team.pass_pct = csvPct(val); break; }
+      if (clo.match(/^rush\s*%?$/)) { result.team.rush_pct = csvPct(val); break; }
+      if (clo.includes('allocated target') || clo.includes('target %')) { result.team.target_pct = csvPct(val); break; }
     }
 
-    if (!currentPos || !c1 || ['QB','RB','WR','TE'].includes(c1up)) continue;
-    if (c1lo.includes('total') || c1lo.includes('remaining') || c1lo.includes('check') ||
-        c1lo.includes('inputs') || c1lo.includes('outputs') || c1lo.includes('fantasy')) continue;
+    // Detect position section header: any cell is QB/RB/WR/TE AND "games" appears anywhere in the row
+    const hasGames = cells.some(c => (c || '').toLowerCase().includes('games'));
+    if (hasGames) {
+      const pi = cells.findIndex((c, i) => i < 8 && ['QB','RB','WR','TE'].includes((c || '').trim().toUpperCase()));
+      if (pi >= 0) {
+        currentPos = cells[pi].trim().toUpperCase();
+        nameCol = pi;
+        posRowsLeft = FIXED_COUNTS[currentPos];
+        continue; // skip the header row itself
+      }
+    }
 
-    const gp = csvNum(cells[2]);
+    if (!currentPos || posRowsLeft <= 0 || nameCol < 0) continue;
+
+    // Consume this row against the fixed count regardless of whether it has a player
+    posRowsLeft--;
+
+    const playerName = (cells[nameCol] || '').trim();
+    if (!playerName) continue; // blank slot — counted above, no player added
+
+    const plo = playerName.toLowerCase();
+    if (['total','remaining','check','inputs','outputs','fantasy'].some(kw => plo.includes(kw))) continue;
+
+    const nc = nameCol;
+    const gp = csvNum(cells[nc + 1]);
     if (gp === '' || gp < 1 || gp > 18) continue;
 
-    const player = { player_name: c1, position: currentPos, nfl_team: abbr || '', inputs: {} };
+    const player = { player_name: playerName, position: currentPos, nfl_team: abbr || '', inputs: {} };
+
     if (currentPos === 'QB') {
-      // C=GP, D=dropbacks(skip), E=comp%, F=Y/A, G=TD%, H=INT%, I=rush_mkt%, J=Y/carry, K=rush_td%, L=fum%
+      // nc+1=GP, nc+2=Dropbacks(skip), nc+3=comp%, nc+4=Y/A, nc+5=TD%, nc+6=INT%,
+      // nc+7=rush_mkt%, nc+8=Y/carry, nc+9=rush_td%, nc+10=fum%
       player.inputs = {
         games_played: gp,
-        completion_pct: csvPct(cells[4]),
-        yards_per_attempt: csvNum(cells[5]),
-        td_pct: csvPct(cells[6]),
-        int_pct: csvPct(cells[7]),
-        rush_market_share: csvPct(cells[8]),
-        yards_per_carry: csvNum(cells[9]),
-        rush_td_rate: csvPct(cells[10]),
-        fumble_rate: csvPct(cells[11]),
+        completion_pct: csvPct(cells[nc + 3]),
+        yards_per_attempt: csvNum(cells[nc + 4]),
+        td_pct: csvPct(cells[nc + 5]),
+        int_pct: csvPct(cells[nc + 6]),
+        rush_market_share: csvPct(cells[nc + 7]),
+        yards_per_carry: csvNum(cells[nc + 8]),
+        rush_td_rate: csvPct(cells[nc + 9]),
+        fumble_rate: csvPct(cells[nc + 10]),
       };
     } else {
-      // C=GP, D=rush_mkt%, E=Y/carry, F=rush_td%, G=target%, H=catch%, I=Y/rec, J=rec_td%, K=routes/G, L=fum% (RB only)
+      // nc+1=GP, nc+2=rush_mkt%, nc+3=Y/carry, nc+4=rush_td%, nc+5=target%,
+      // nc+6=catch%, nc+7=Y/rec, nc+8=rec_td%, nc+9=routes/G, nc+10=fum% (RB only)
       player.inputs = {
         games_played: gp,
-        rush_market_share: csvPct(cells[3]),
-        yards_per_carry: csvNum(cells[4]),
-        rush_td_rate: csvPct(cells[5]),
-        target_share: csvPct(cells[6]),
-        catch_rate: csvPct(cells[7]),
-        yards_per_reception: csvNum(cells[8]),
-        receiving_td_rate: csvPct(cells[9]),
-        routes_per_game: csvNum(cells[10]),
+        rush_market_share: csvPct(cells[nc + 2]),
+        yards_per_carry: csvNum(cells[nc + 3]),
+        rush_td_rate: csvPct(cells[nc + 4]),
+        target_share: csvPct(cells[nc + 5]),
+        catch_rate: csvPct(cells[nc + 6]),
+        yards_per_reception: csvNum(cells[nc + 7]),
+        receiving_td_rate: csvPct(cells[nc + 8]),
+        routes_per_game: csvNum(cells[nc + 9]),
       };
-      if (currentPos === 'RB') player.inputs.fumble_rate = csvPct(cells[11]);
+      if (currentPos === 'RB') player.inputs.fumble_rate = csvPct(cells[nc + 10]);
     }
     result.players.push(player);
   }
