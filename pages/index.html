@@ -836,7 +836,8 @@ async function runSheetSync(mode) {
   if (!tabName) { notif('Enter the tab name', true); return; }
   try {
     const res = await apiPost('/projections/sync-sheets', { sheetId, sheetName: tabName });
-    const parsed = parseTeamCSV(res.csv || '', editTeam);
+    const rawCsv = res.csv || '';
+    const parsed = parseTeamCSV(rawCsv, editTeam);
     _syncParsed = { mode: 'single', data: parsed };
     const qbs = parsed.players.filter(p=>p.position==='QB').length;
     const rbs = parsed.players.filter(p=>p.position==='RB').length;
@@ -845,13 +846,26 @@ async function runSheetSync(mode) {
     const teamLine = parsed.team.total_plays
       ? `<div style="margin-top:6px;color:var(--parchment);">Team: ${parsed.team.total_plays} plays, ${parsed.team.pass_pct}% pass, ${parsed.team.rush_pct}% rush, ${parsed.team.target_pct}% target</div>`
       : '<div style="margin-top:6px;color:var(--brown-light);">Team-level inputs not detected (check tab structure)</div>';
+
+    // When 0 players found, show a debug dump so we can see the raw CSV structure
+    let debugHtml = '';
+    if (parsed.players.length === 0) {
+      const debugRows = parseCSVRows(rawCsv).slice(0, 35);
+      debugHtml = `<details style="margin-top:10px;"><summary style="cursor:pointer;color:var(--gold-light);font-size:0.8rem;">▶ Debug: raw CSV rows (${debugRows.length} shown)</summary>
+        <div style="font-family:monospace;font-size:0.68rem;color:var(--parchment);margin-top:6px;white-space:pre-wrap;">${
+          debugRows.map((cells, ri) =>
+            `[${ri}] ` + cells.map((c, ci) => `[${ci}]=${esc(c||'')}`).join(' ')
+          ).join('\n')
+        }</div></details>`;
+    }
+
     preview.innerHTML = `
-      <div style="color:var(--green-light);font-weight:600;">${parsed.players.length} players found: ${qbs} QB, ${rbs} RB, ${wrs} WR, ${tes} TE</div>
-      ${teamLine}
+      <div style="color:${parsed.players.length>0?'var(--green-light)':'var(--red)'};font-weight:600;">${parsed.players.length} players found: ${qbs} QB, ${rbs} RB, ${wrs} WR, ${tes} TE</div>
+      ${teamLine}${debugHtml}
       <ul style="margin:8px 0 0;padding-left:18px;color:var(--parchment);font-size:0.82rem;">
         ${parsed.players.map(p=>`<li>${esc(p.player_name)} (${p.position}) — GP: ${p.inputs.games_played}</li>`).join('')}
       </ul>
-      <button class="btn" style="margin-top:12px;" onclick="confirmSyncImport()">Confirm &amp; Import into Form</button>`;
+      ${parsed.players.length > 0 ? `<button class="btn" style="margin-top:12px;" onclick="confirmSyncImport()">Confirm &amp; Import into Form</button>` : ''}`;
   } catch(e) { preview.innerHTML = `<div style="color:var(--red);">Error: ${esc(e.message)}</div>`; }
 }
 
