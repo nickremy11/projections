@@ -41,7 +41,7 @@ body {
 }
 .banner-inner {
   position: relative; z-index: 1;
-  max-width: 1600px; margin: 0 auto; padding: 18px 24px 14px;
+  max-width: 1100px; margin: 0 auto; padding: 18px 24px 14px;
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
 }
 .banner-left { flex: 1; }
@@ -56,7 +56,7 @@ body {
 .banner-sub { margin-top: 4px; font-family: 'Playfair Display', serif; font-style: italic; font-size: 0.8rem; color: var(--parchment); opacity: 0.75; }
 #auth-chip { display: flex; align-items: center; }
 
-.content { max-width: 1600px; margin: 0 auto; padding: 20px 16px 60px; }
+.content { max-width: 1100px; margin: 0 auto; padding: 20px 16px 60px; }
 .hidden { display: none !important; }
 
 /* ── Auth gate ── */
@@ -118,8 +118,8 @@ table.proj td.l { text-align: left; }
 table.proj tr:hover td { background: rgba(201,150,42,0.08); }
 .player-name { font-weight: 600; color: var(--brown-dark); }
 .team-tag, .pos-tag {
-  font-family: 'Rye', serif; font-size: 0.42rem; letter-spacing: 0.08em; text-transform: uppercase;
-  padding: 2px 6px; border-radius: 2px; color: var(--cream); display: inline-block;
+  font-family: 'Rye', serif; font-size: 0.55rem; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 3px 8px; border-radius: 2px; color: var(--cream); display: inline-block; font-weight: 400;
 }
 .pos-QB { background: var(--pos-qb); } .pos-RB { background: var(--pos-rb); }
 .pos-WR { background: var(--pos-wr); } .pos-TE { background: var(--pos-te); }
@@ -331,16 +331,41 @@ const TEAM_FULL_NAME = {
 // ── Scoring config ──────────────────────────────────────────────────────────
 const SCORING_DEFAULTS = {
   pass_yd: 0.04, pass_td: 4, pass_int: -2,
-  rush_yd: 0.1, rush_td: 6,
+  rush_att: 0, rush_yd: 0.1, rush_td: 6,
   rec: 1, rec_yd: 0.1, rec_td: 6,
   fum_lost: -2, te_premium: 0,
 };
 const SCORING_LABELS = {
   pass_yd: 'Pass Yd', pass_td: 'Pass TD', pass_int: 'Interception',
-  rush_yd: 'Rush Yd', rush_td: 'Rush TD',
+  rush_att: 'Rush Att', rush_yd: 'Rush Yd', rush_td: 'Rush TD',
   rec: 'Reception (PPR)', rec_yd: 'Rec Yd', rec_td: 'Rec TD',
   fum_lost: 'Fumble Lost', te_premium: 'TE Premium (/rec)',
 };
+
+// ── Team colors ─────────────────────────────────────────────────────────────
+const TEAM_COLORS = {
+  ARI:'#97233F', ATL:'#A71930', BAL:'#241773', BUF:'#00338D',
+  CAR:'#0085CA', CHI:'#0B162A', CIN:'#FB4F14', CLE:'#311D00',
+  DAL:'#041E42', DEN:'#FB4F14', DET:'#0076B6', GB:'#203731',
+  HOU:'#03202F', IND:'#002C5F', JAX:'#006778', KC:'#E31837',
+  LV:'#000000', LAC:'#0080C6', LAR:'#003594', MIA:'#008E97',
+  MIN:'#4F2683', NE:'#002244', NO:'#9B8958', NYG:'#0B2265',
+  NYJ:'#125740', PHI:'#004C54', PIT:'#FFB612', SF:'#AA0000',
+  SEA:'#002244', TB:'#D50A0A', TEN:'#0C2340', WAS:'#773141',
+};
+const TEAM_LIGHT = new Set(['PIT']); // teams with light backgrounds needing dark text
+function teamTagStyle(team){
+  const bg = TEAM_COLORS[team] || 'var(--brown-light)';
+  return `background:${bg};color:${TEAM_LIGHT.has(team)?'#1a1a1a':'var(--cream)'}`;
+}
+
+// ── Output table column definitions ─────────────────────────────────────────
+const OUTPUT_COLS = {
+  QB: [['passAtt','Att'],['comp','Comp'],['passYds','PYds'],['passTD','PTD'],['int','INT'],['rushAtt','RAtt'],['rushYds','RYds'],['rushTD','RuTD'],['fum','Fum']],
+  RB: [['rushAtt','RAtt'],['rushYds','RYds'],['rushTD','RuTD'],['targets','Tgt'],['rec','Rec'],['recYds','RecYds'],['recTD','RecTD'],['yprr','YPRR'],['fum','Fum']],
+  WR: [['rushAtt','RAtt'],['targets','Tgt'],['rec','Rec'],['recYds','RecYds'],['recTD','RecTD'],['yprr','YPRR'],['fum','Fum']],
+};
+OUTPUT_COLS.TE = OUTPUT_COLS.WR;
 let SCORING = loadScoring();
 function loadScoring() {
   try { return { ...SCORING_DEFAULTS, ...JSON.parse(localStorage.getItem('proj_scoring') || '{}') }; }
@@ -356,6 +381,9 @@ const state = {
 let rankPos = 'ALL';            // QB | RB | WR | TE | FLEX | ALL
 let rankSort = { col: 'calc_ppg', dir: -1 };
 let rankSearch = '';
+let outputPos = 'RB';           // QB | RB | WR | TE
+let outputSort = { col: 'ppg', dir: -1 };
+let outputPG = true;
 let editTeam = null;            // currently edited team abbr
 let editDraft = null;          // { team:{...}, players:[{...}] } working copy
 
@@ -406,7 +434,8 @@ function calcPlayer(p, tt){
     out.rushTD  = rushAtt * n(i.rush_td_rate)/100;
     out.fum     = (passAtt + rushAtt) * n(i.fumble_rate)/100;
     out.pts = out.passYds*SCORING.pass_yd + out.passTD*SCORING.pass_td + out.int*SCORING.pass_int
-            + out.rushYds*SCORING.rush_yd + out.rushTD*SCORING.rush_td + out.fum*SCORING.fum_lost;
+            + out.rushAtt*SCORING.rush_att + out.rushYds*SCORING.rush_yd + out.rushTD*SCORING.rush_td
+            + out.fum*SCORING.fum_lost;
   } else {
     const rushAtt = tt.rushSeason * n(i.rush_market_share)/100 * scale;
     const targets = tt.targetSeason * n(i.target_share)/100 * scale;
@@ -426,7 +455,7 @@ function calcPlayer(p, tt){
     out.trr     = routes>0 ? targets/routes : 0;
     out.fum     = (rushAtt + rec) * n(i.fumble_rate)/100;
     const tePrem = p.position==='TE' ? rec*SCORING.te_premium : 0;
-    out.pts = out.rushYds*SCORING.rush_yd + out.rushTD*SCORING.rush_td
+    out.pts = out.rushAtt*SCORING.rush_att + out.rushYds*SCORING.rush_yd + out.rushTD*SCORING.rush_td
             + out.rec*SCORING.rec + out.recYds*SCORING.rec_yd + out.recTD*SCORING.rec_td
             + out.fum*SCORING.fum_lost + tePrem;
   }
@@ -518,6 +547,13 @@ function rankedRows(){
   eligible.forEach((r,idx)=>r.rank2026 = idx+1);
   rows.filter(r=>r.gp<MIN_GAMES_RANK).forEach(r=>r.rank2026 = null);
 
+  // Positional rank within own position (for FLEX column)
+  ['QB','RB','WR','TE'].forEach(pos=>{
+    const pe = rows.filter(r=>r.pos===pos && r.gp>=MIN_GAMES_RANK).sort((a,b)=>b.calc_ppg-a.calc_ppg);
+    pe.forEach((r,i)=>r.posRank=i+1);
+    rows.filter(r=>r.pos===pos && r.gp<MIN_GAMES_RANK).forEach(r=>r.posRank=null);
+  });
+
   // Apply sort. dir=1 ascending, dir=-1 descending.
   const { dir, col } = rankSort;
   const textCols = { name:r=>r.name.toLowerCase(), pos:r=>r.pos, team:r=>r.team };
@@ -541,23 +577,34 @@ function renderRankings(){
     `<button class="pill ${rankPos===p?'active':''}" onclick="setRankPos('${p}')">${p}</button>`).join('');
   const rows = rankedRows();
   const arrow = col => rankSort.col===col ? `<span class="arrow">${rankSort.dir===1?'▲':'▼'}</span>` : '';
+  const isFlexOrAll = rankPos === 'FLEX' || rankPos === 'ALL';
   const body = rows.length ? rows.map(r=>{
-    let delta = '';
-    if (r.rank2026 && r.rank_2025){
-      const d = r.rank_2025 - r.rank2026;
-      delta = d>0 ? `<span class="delta-up">▲${d}</span>` : d<0 ? `<span class="delta-down">▼${-d}</span>` : '';
+    let col2;
+    if (isFlexOrAll) {
+      // Show positional rank (e.g. RB2) instead of 2025 rank
+      col2 = r.posRank != null
+        ? `<span style="font-size:0.78rem;color:var(--brown-light);">${r.pos}</span>${r.posRank}`
+        : '<span class="muted">—</span>';
+    } else {
+      let delta = '';
+      if (r.rank2026 && r.rank_2025){ const d=r.rank_2025-r.rank2026; delta=d>0?`<span class="delta-up">▲${d}</span>`:d<0?`<span class="delta-down">▼${-d}</span>`:''; }
+      col2 = (r.rank_2025 != null ? r.rank_2025 : '<span class="muted">—</span>') + ' ' + delta;
     }
     return `<tr>
       <td class="rank-cell">${r.rank2026 ?? '<span class="muted">—</span>'}</td>
-      <td>${r.rank_2025 != null ? r.rank_2025 : '<span class="muted">—</span>'} ${delta}</td>
+      <td>${col2}</td>
       <td class="l"><span class="player-name">${esc(r.name)}</span></td>
       <td class="l"><span class="pos-tag pos-${r.pos}">${r.pos}</span></td>
-      <td class="l"><span class="team-tag">${esc(r.team||'—')}</span></td>
+      <td class="l"><span class="team-tag" style="${teamTagStyle(r.team)}">${esc(r.team||'—')}</span></td>
       <td>${r.gp}</td>
       <td>${r1(r.calc_pts)}</td>
       <td class="ppg-val">${r.calc_ppg.toFixed(1)}</td>
     </tr>`;
   }).join('') : `<tr><td colspan="8" class="muted" style="text-align:center;padding:30px;">No projections yet. Build some in the Edit tab.</td></tr>`;
+
+  const col2Header = isFlexOrAll
+    ? `<th onclick="sortRank('posRank')">Pos Rk ${arrow('posRank')}</th>`
+    : `<th onclick="sortRank('rank_2025')">2025 ${arrow('rank_2025')}</th>`;
 
   c.innerHTML = `
     <div class="pills">${pills}
@@ -567,7 +614,7 @@ function renderRankings(){
     <div class="tbl-wrap"><table class="proj">
       <thead><tr>
         <th onclick="sortRank('rank2026')">2026 ${arrow('rank2026')}</th>
-        <th onclick="sortRank('rank_2025')">2025 ${arrow('rank_2025')}</th>
+        ${col2Header}
         <th class="l" onclick="sortRank('name')">Player ${arrow('name')}</th>
         <th class="l" onclick="sortRank('pos')">Pos ${arrow('pos')}</th>
         <th class="l" onclick="sortRank('team')">Team ${arrow('team')}</th>
@@ -577,62 +624,81 @@ function renderRankings(){
       </tr></thead>
       <tbody>${body}</tbody>
     </table></div>
-    <div style="margin-top:8px;font-size:0.8rem;" class="muted">2026 rank assigned by PPG among players with ≥${MIN_GAMES_RANK} games. ${rows.length} players shown.</div>`;
+    <div style="margin-top:8px;font-size:0.8rem;" class="muted">2026 rank by PPG (≥${MIN_GAMES_RANK} GP). ${rows.length} players shown.</div>`;
 }
 function setRankPos(p){ rankPos=p; renderRankings(); }
 function sortRank(col){
   if (rankSort.col===col) rankSort.dir*=-1;
-  else rankSort = { col, dir: (col==='name'||col==='pos'||col==='team'||col==='rank2026'||col==='rank_2025') ? 1 : -1 };
+  else rankSort = { col, dir: (col==='name'||col==='pos'||col==='team'||col==='rank2026'||col==='rank_2025'||col==='posRank') ? 1 : -1 };
   renderRankings();
 }
 
 // ── Tab 2: Outputs ──────────────────────────────────────────────────────────
-let outputsPerGame = true;
 function renderOutputs(){
   const c = document.getElementById('tab-outputs');
   if (!state.loaded){ c.innerHTML='<div class="loading">Loading…</div>'; return; }
-  const teamsWithPlayers = NFL_TEAMS.filter(([ab])=>state.players.some(p=>p.nfl_team===ab));
-  if (!teamsWithPlayers.length){ c.innerHTML='<div class="loading">No projections yet — build some in the Edit tab.</div>'; return; }
+  if (!state.players.length){ c.innerHTML='<div class="loading">No projections yet — build some in the Edit tab.</div>'; return; }
 
-  const blocks = teamsWithPlayers.map(([ab,full])=>{
-    const players = state.players.filter(p=>p.nfl_team===ab);
-    const tt = teamTotals(state.teams[ab]||{});
-    const byPos = { QB:[], RB:[], WR:[], TE:[] };
-    players.forEach(p=>{ (byPos[p.position]||(byPos[p.position]=[])).push(p); });
-    let inner = '';
-    for (const pos of ['QB','RB','WR','TE']){
-      const list = byPos[pos]; if (!list || !list.length) continue;
-      inner += outputTable(pos, list, tt);
-    }
-    return `<div class="card"><div class="card-title">${ab} — ${full}</div>${inner}</div>`;
-  }).join('');
+  const cols = OUTPUT_COLS[outputPos] || [];
+  const RATE_KEYS = new Set(['yprr','trr']); // rates: not divided by gp in per-game mode
 
-  c.innerHTML = `<div class="pills">
-      <button class="pill ${outputsPerGame?'active':''}" onclick="outputsPerGame=true;renderOutputs()">Per Game</button>
-      <button class="pill ${!outputsPerGame?'active':''}" onclick="outputsPerGame=false;renderOutputs()">Season Total</button>
-    </div>${blocks}`;
+  const allRows = state.players
+    .filter(p=>p.position===outputPos)
+    .map(p=>{
+      const tt = teamTotals(state.teams[p.nfl_team]||{});
+      const o = calcPlayer(p,tt);
+      return { name:p.player_name, team:p.nfl_team, gp:o.gp, ppg:o.ppg, out:o };
+    });
+
+  const { col, dir } = outputSort;
+  allRows.sort((a,b)=>{
+    if (col==='name') return (a.name<b.name?-1:a.name>b.name?1:0)*dir;
+    if (col==='team') return (a.team<b.team?-1:a.team>b.team?1:0)*dir;
+    const av = col==='ppg'?a.ppg:(a.out[col]??0);
+    const bv = col==='ppg'?b.ppg:(b.out[col]??0);
+    return (av-bv)*dir;
+  });
+
+  const fmt = (o,key)=>{
+    const v=o[key]??0;
+    return r1(outputPG && o.gp>0 && !RATE_KEYS.has(key) ? v/o.gp : v);
+  };
+  const arrow = key => outputSort.col===key?`<span class="arrow">${outputSort.dir===1?'▲':'▼'}</span>`:'';
+  const sf = key => `outputSortBy('${key}')`;
+
+  const pills = ['QB','RB','WR','TE'].map(p=>
+    `<button class="pill ${outputPos===p?'active':''}" onclick="setOutputPos('${p}')">${p}</button>`).join('');
+
+  const header = `<tr>
+    <th class="l" onclick="${sf('name')}">Player ${arrow('name')}</th>
+    <th class="l" onclick="${sf('team')}">Team ${arrow('team')}</th>
+    <th onclick="${sf('gp')}">GP ${arrow('gp')}</th>
+    ${cols.map(([key,label])=>`<th onclick="${sf(key)}">${label} ${arrow(key)}</th>`).join('')}
+    <th onclick="${sf('ppg')}">PPG ${arrow('ppg')}</th>
+  </tr>`;
+
+  const body = allRows.length ? allRows.map(r=>`<tr>
+    <td class="l"><span class="player-name">${esc(r.name)}</span></td>
+    <td class="l"><span class="team-tag" style="${teamTagStyle(r.team)}">${esc(r.team||'—')}</span></td>
+    <td>${r.gp}</td>
+    ${cols.map(([key])=>`<td>${fmt(r.out,key)}</td>`).join('')}
+    <td class="ppg-val">${r.ppg.toFixed(1)}</td>
+  </tr>`).join('') : `<tr><td colspan="${cols.length+4}" class="muted" style="text-align:center;padding:30px;">No ${outputPos} projections yet.</td></tr>`;
+
+  c.innerHTML = `
+    <div class="pills">${pills}
+      <div style="flex:1"></div>
+      <button class="pill ${outputPG?'active':''}" onclick="outputPG=true;renderOutputs()">Per Game</button>
+      <button class="pill ${!outputPG?'active':''}" onclick="outputPG=false;renderOutputs()">Season Total</button>
+    </div>
+    <div class="tbl-wrap"><table class="proj"><thead>${header}</thead><tbody>${body}</tbody></table></div>
+    <div style="margin-top:8px;font-size:0.8rem;" class="muted">${allRows.length} ${outputPos}s shown. ${outputPG?'Per-game values.':'Season totals.'}</div>`;
 }
-function outputTable(pos, list, tt){
-  // Engine returns season totals; divide by gp for per-game view
-  const fmt = (o, v) => r1(outputsPerGame && o.gp > 0 ? v/o.gp : v);
-  const header = pos==='QB'
-    ? ['Player','GP','Comp','Att','PYds','PTD','INT','RAtt','RYds','RTD','Fum','PPG']
-    : ['Player','GP','RAtt','RYds','RTD','Tgt','Rec','RecYds','RecTD','YPRR','PPG'];
-  const rows = list.map(p=>{
-    const o = calcPlayer(p, tt);
-    let cells;
-    if (pos==='QB'){
-      cells = [o.comp,o.passAtt,o.passYds,o.passTD,o.int,o.rushAtt,o.rushYds,o.rushTD,o.fum]
-        .map(v=>`<td>${fmt(o,v)}</td>`).join('');
-    } else {
-      cells = [o.rushAtt,o.rushYds,o.rushTD,o.targets,o.rec,o.recYds,o.recTD]
-        .map(v=>`<td>${fmt(o,v)}</td>`).join('')
-        + `<td>${r1(o.yprr)}</td>`;  // YPRR is already a rate, stays as-is
-    }
-    return `<tr><td class="l"><span class="player-name">${esc(p.player_name)}</span></td><td>${o.gp}</td>${cells}<td class="ppg-val">${o.ppg.toFixed(1)}</td></tr>`;
-  }).join('');
-  return `<div style="margin-bottom:6px;"><span class="pos-tag pos-${pos}">${pos}</span></div>
-    <div class="tbl-wrap" style="margin-bottom:14px;"><table class="proj"><thead><tr>${header.map((h,i)=>`<th class="${i===0?'l':''}">${h}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>`;
+function setOutputPos(pos){ outputPos=pos; outputSort={col:'ppg',dir:-1}; renderOutputs(); }
+function outputSortBy(col){
+  if(outputSort.col===col) outputSort.dir*=-1;
+  else outputSort={col,dir:(col==='name'||col==='team')?1:-1};
+  renderOutputs();
 }
 
 // ── Tab 3: Edit ─────────────────────────────────────────────────────────────
@@ -711,14 +777,28 @@ function renderEditTeam(){
 function editPlayerRow(p, idx){
   const fields = POS_FIELDS[p.position].map(([k,l])=>
     `<div class="inp-field"><label>${l}</label><input type="number" step="0.1" value="${p.inputs[k]??''}" oninput="editDraft.players[${idx}].inputs.${k}=this.value;recalcEdit()"></div>`).join('');
+  const nameHtml = p.player_name
+    ? `<span id="pname-${idx}" style="font-family:'Crimson Text',serif;font-size:1.05rem;font-weight:700;color:var(--brown-dark);">${esc(p.player_name)} <button onclick="unlockPlayerName(${idx})" style="background:none;border:none;cursor:pointer;color:var(--brown-light);font-size:0.75rem;padding:0 2px;" title="Rename">✎</button></span>`
+    : `<div class="inp-field"><label>Player Name</label><input id="pname-${idx}" class="name-input" placeholder="Name…" value="" oninput="editDraft.players[${idx}].player_name=this.value" onblur="if(this.value)lockPlayerName(${idx},this.value)"></div>`;
   return `<div class="ep-row" id="eprow-${idx}">
-    <div class="ep-head">
-      <div class="inp-field"><label>Player Name</label><input class="name-input" value="${esc(p.player_name)}" oninput="editDraft.players[${idx}].player_name=this.value"></div>
-      <button class="btn btn-sm btn-danger" onclick="removePlayer(${idx})">Remove</button>
-    </div>
+    <div class="ep-head">${nameHtml}<button class="btn btn-sm btn-danger" onclick="removePlayer(${idx})">Remove</button></div>
     <div class="inp-row">${fields}</div>
     <div class="ep-out" id="epout-${idx}"></div>
   </div>`;
+}
+function unlockPlayerName(idx){
+  const span = document.getElementById('pname-'+idx);
+  if(!span) return;
+  const cur = editDraft.players[idx].player_name;
+  span.outerHTML = `<div class="inp-field"><label>Player Name</label><input id="pname-${idx}" class="name-input" value="${esc(cur)}" oninput="editDraft.players[${idx}].player_name=this.value" onblur="if(this.value)lockPlayerName(${idx},this.value)"></div>`;
+  const inp = document.getElementById('pname-'+idx); if(inp){inp.focus();inp.select();}
+}
+function lockPlayerName(idx, val){
+  editDraft.players[idx].player_name = val;
+  const el = document.getElementById('pname-'+idx);
+  if(!el) return;
+  const parent = el.closest ? el.closest('.inp-field') || el : el;
+  parent.outerHTML = `<span id="pname-${idx}" style="font-family:'Crimson Text',serif;font-size:1.05rem;font-weight:700;color:var(--brown-dark);">${esc(val)} <button onclick="unlockPlayerName(${idx})" style="background:none;border:none;cursor:pointer;color:var(--brown-light);font-size:0.75rem;padding:0 2px;" title="Rename">✎</button></span>`;
 }
 function addPlayer(pos){
   editDraft.players.push({ player_name:'', position:pos, inputs:{ games_played:17 } });
@@ -738,10 +818,13 @@ function recalcEdit(){
     const el = document.getElementById('epout-'+idx);
     if (!el) return;
     const o = calcPlayer(p, tt);
+    const s = k => `<span class="stat">${k}</span>`;
     if (p.position==='QB'){
-      el.innerHTML = `<span class="stat">PPG</span> ${o.ppg.toFixed(1)} <span class="stat">Att</span>${r1(o.passAtt)} <span class="stat">Comp</span>${r1(o.comp)} <span class="stat">PYds</span>${r1(o.passYds)} <span class="stat">PTD</span>${r1(o.passTD)} <span class="stat">RAtt</span>${r1(o.rushAtt)} <span class="stat">RYds</span>${r1(o.rushYds)}`;
+      el.innerHTML = `${s('PPG')} ${o.ppg.toFixed(1)} ${s('Att')}${r1(o.passAtt)} ${s('Comp')}${r1(o.comp)} ${s('PYds')}${r1(o.passYds)} ${s('PTD')}${r1(o.passTD)} ${s('INT')}${r1(o.int)} ${s('RAtt')}${r1(o.rushAtt)} ${s('RYds')}${r1(o.rushYds)} ${s('RuTD')}${r1(o.rushTD)} ${s('Fum')}${r1(o.fum)}`;
+    } else if (p.position==='RB'){
+      el.innerHTML = `${s('PPG')} ${o.ppg.toFixed(1)} ${s('RAtt')}${r1(o.rushAtt)} ${s('RYds')}${r1(o.rushYds)} ${s('RuTD')}${r1(o.rushTD)} ${s('Fum')}${r1(o.fum)} ${s('Tgt')}${r1(o.targets)} ${s('Rec')}${r1(o.rec)} ${s('RecYds')}${r1(o.recYds)} ${s('RecTD')}${r1(o.recTD)} ${s('YPRR')}${r1(o.yprr)}`;
     } else {
-      el.innerHTML = `<span class="stat">PPG</span> ${o.ppg.toFixed(1)} <span class="stat">Tgt</span>${r1(o.targets)} <span class="stat">Rec</span>${r1(o.rec)} <span class="stat">RecYds</span>${r1(o.recYds)} <span class="stat">RAtt</span>${r1(o.rushAtt)} <span class="stat">YPRR</span>${r1(o.yprr)}`;
+      el.innerHTML = `${s('PPG')} ${o.ppg.toFixed(1)} ${s('Tgt')}${r1(o.targets)} ${s('Rec')}${r1(o.rec)} ${s('RecYds')}${r1(o.recYds)} ${s('RecTD')}${r1(o.recTD)} ${s('RAtt')}${r1(o.rushAtt)} ${s('RYds')}${r1(o.rushYds)} ${s('YPRR')}${r1(o.yprr)} ${s('Fum')}${r1(o.fum)}`;
     }
   });
 
