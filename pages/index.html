@@ -438,6 +438,29 @@ function normName(s){
     .replace(/\s+/g,' ').trim();
 }
 
+// Match keys for a name: the full normalized name, plus a looser
+// "first-initial + last-name" key that bridges nicknames (Cam↔Cameron,
+// Ken↔Kenneth, Chig↔Chigoziem). The loose key is only used when it resolves
+// to exactly one same-position player in the source (see clayMatch).
+function nameKeys(name){
+  const norm = normName(name);
+  const parts = norm.split(' ').filter(Boolean);
+  const last = parts.length > 1 ? parts[parts.length - 1] : norm;
+  const fi   = parts.length > 1 ? parts[0][0] : '';
+  return { full: norm, loose: (fi && last) ? fi + ' ' + last : null };
+}
+
+// Resolve a source (Clay) player for one of my players: exact name first, then
+// the position-scoped first-initial+last-name fallback (skipped when ambiguous).
+function clayMatch(srcObj, name, pos){
+  if (!srcObj) return null;
+  const k = nameKeys(name);
+  const exact = srcObj.byName[k.full];
+  if (exact) return exact;
+  if (k.loose){ const hit = srcObj.byLoose[k.loose + '|' + pos]; if (hit) return hit; }
+  return null;
+}
+
 // Score an external (season-total) player line through the current SCORING config,
 // so external PPG is directly comparable to my computed PPG. External lines carry
 // no fumbles, so fum_lost contributes 0.
@@ -584,9 +607,16 @@ async function loadExternal(key){
   try {
     const res = await apiGet(`/projections/external?source=${key}&season=${SEASON}`);
     const players = res.players || [];
-    const byName = {};
-    for (const p of players) byName[normName(p.player_name)] = p;
-    state.external[key] = { name: res.name || key, players, byName };
+    const byName = {}, byLoose = {};
+    for (const p of players){
+      const k = nameKeys(p.player_name);
+      byName[k.full] = p;
+      if (k.loose){
+        const lk = k.loose + '|' + p.position;
+        byLoose[lk] = (lk in byLoose) ? null : p; // null marks an ambiguous key
+      }
+    }
+    state.external[key] = { name: res.name || key, players, byName, byLoose };
     if (state.loaded) renderActive();
     return state.external[key];
   } catch(e){ return null; }
@@ -610,16 +640,19 @@ function switchTab(tab){
 function rankedRows(){
   // Recompute fresh PPG from current scoring so the table always reflects settings.
   const clay = state.external.clay;
-  let rows = state.players.map(p=>{
-    const tt = teamTotals(state.teams[p.nfl_team] || {});
-    const o = calcPlayer(p, tt);
-    // Match external (Clay) line by normalized name; PPG recomputed in current scoring.
-    const cp = clay ? clay.byName[normName(p.player_name)] : null;
-    const clay_ppg = cp ? scoreClay(cp).ppg : null;
-    return { name:p.player_name, team:p.nfl_team, pos:p.position, gp:o.gp,
-             calc_ppg:o.ppg, calc_pts:o.pts, rank_2025:p.rank_2025, out:o,
-             clay_ppg, clay_rk: cp ? cp.clay_rk : null };
-  });
+  let rows = state.players
+    // Drop QBs projected for fewer than 3 games (deep backups / camp arms).
+    .filter(p => !(p.position === 'QB' && n((p.inputs||{}).games_played) < 3))
+    .map(p=>{
+      const tt = teamTotals(state.teams[p.nfl_team] || {});
+      const o = calcPlayer(p, tt);
+      // Match external (Clay) line; PPG recomputed in current scoring.
+      const cp = clayMatch(clay, p.player_name, p.position);
+      const clay_ppg = cp ? scoreClay(cp).ppg : null;
+      return { name:p.player_name, team:p.nfl_team, pos:p.position, gp:o.gp,
+               calc_ppg:o.ppg, calc_pts:o.pts, rank_2025:p.rank_2025, out:o,
+               clay_ppg, clay_rk: cp ? cp.clay_rk : null };
+    });
   if (rankPos==='FLEX') rows = rows.filter(r=>['RB','WR','TE'].includes(r.pos));
   else if (rankPos!=='ALL') rows = rows.filter(r=>r.pos===rankPos);
   if (rankSearch) rows = rows.filter(r=>r.name.toLowerCase().includes(rankSearch));
